@@ -1,0 +1,23 @@
+{
+  "name": "game-server-framework",
+  "version": "1.0.0",
+  "description": "A hot-reloadable game server framework with room isolation and state sync",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "watch": "tsc -w"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "ts-node-dev": "^2.0.0",
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10",
+    "@types/uuid": "^9.0.0"
+  }
+}

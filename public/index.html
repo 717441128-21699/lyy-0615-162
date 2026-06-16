@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Server Test Client</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .panel h2 {
+            margin-bottom: 15px;
+            color: #00d4ff;
+            font-size: 18px;
+            border-bottom: 2px solid #00d4ff;
+            padding-bottom: 8px;
+        }
+        .form-group {
+            margin-bottom: 12px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+            color: #aaa;
+        }
+        input, button {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        input {
+            background: #0f3460;
+            color: #fff;
+            border: 1px solid #00d4ff33;
+        }
+        input:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        button {
+            background: linear-gradient(135deg, #00d4ff, #0066ff);
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.4);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .game-canvas {
+            width: 100%;
+            height: 400px;
+            background: #0f3460;
+            border-radius: 8px;
+            position: relative;
+            overflow: hidden;
+            border: 2px solid #00d4ff33;
+        }
+        .player-dot {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #00ff88;
+            transform: translate(-50%, -50%);
+            transition: all 0.05s linear;
+            box-shadow: 0 0 10px #00ff88;
+        }
+        .player-dot.self {
+            background: #ff6b6b;
+            box-shadow: 0 0 15px #ff6b6b;
+        }
+        .player-label {
+            position: absolute;
+            font-size: 10px;
+            color: #fff;
+            transform: translate(-50%, -20px);
+            white-space: nowrap;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+        }
+        .status-bar {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+            font-size: 12px;
+        }
+        .status-item {
+            background: #0f3460;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        .status-item .label {
+            color: #888;
+            margin-right: 5px;
+        }
+        .status-item .value {
+            color: #00d4ff;
+            font-weight: bold;
+        }
+        .log-panel {
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            background: #0a0a1a;
+            padding: 10px;
+            border-radius: 6px;
+        }
+        .log-entry {
+            padding: 2px 0;
+            border-bottom: 1px solid #ffffff10;
+        }
+        .log-entry.info { color: #888; }
+        .log-entry.success { color: #00ff88; }
+        .log-entry.error { color: #ff6b6b; }
+        .log-entry.warning { color: #ffd93d; }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .dir-btn {
+            padding: 15px;
+            font-size: 20px;
+        }
+        .dir-btn:nth-child(1) { grid-column: 2; }
+        .dir-btn:nth-child(2) { grid-column: 1; }
+        .dir-btn:nth-child(3) { grid-column: 3; }
+        .dir-btn:nth-child(4) { grid-column: 2; }
+        .action-btn {
+            margin-top: 10px;
+            background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+        }
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="panel">
+            <h2>🎮 连接设置</h2>
+            <div class="form-group">
+                <label>服务器地址</label>
+                <input type="text" id="serverUrl" value="ws://localhost:8080">
+            </div>
+            <div class="form-group">
+                <label>房间 ID</label>
+                <input type="text" id="roomId" value="room-001">
+            </div>
+            <div class="form-group">
+                <label>玩家名称</label>
+                <input type="text" id="playerName" value="TestPlayer">
+            </div>
+            <button id="connectBtn">连接</button>
+            <button id="disconnectBtn" disabled style="margin-top: 8px; background: linear-gradient(135deg, #666, #444);">断开连接</button>
+            <button id="reconnectBtn" disabled style="margin-top: 8px; background: linear-gradient(135deg, #ffa502, #ff6348);">模拟断线重连</button>
+        </div>
+
+        <div class="panel">
+            <h2>🎯 游戏画面</h2>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="label">Tick:</span>
+                    <span class="value" id="tickCount">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">玩家:</span>
+                    <span class="value" id="playerCount">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">状态:</span>
+                    <span class="value" id="statusText">未连接</span>
+                </div>
+            </div>
+            <div class="game-canvas" id="gameCanvas">
+            </div>
+            <div class="controls">
+                <button class="dir-btn" data-dir="up">↑</button>
+                <button class="dir-btn" data-dir="left">←</button>
+                <button class="dir-btn" data-dir="right">→</button>
+                <button class="dir-btn" data-dir="down">↓</button>
+            </div>
+            <button class="action-btn" id="jumpBtn">跳跃 (+1分)</button>
+        </div>
+
+        <div class="panel" style="grid-column: 1 / -1;">
+            <h2>📋 消息日志</h2>
+            <div class="log-panel" id="logPanel"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let playerId = null;
+        let roomId = null;
+        let isConnected = false;
+        let lastTick = 0;
+        let players = {};
+        let moveDir = { x: 0, y: 0 };
+        let inputTick = 0;
+
+        const logPanel = document.getElementById('logPanel');
+        const gameCanvas = document.getElementById('gameCanvas');
+        const tickCountEl = document.getElementById('tickCount');
+        const playerCountEl = document.getElementById('playerCount');
+        const statusTextEl = document.getElementById('statusText');
+
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const time = new Date().toLocaleTimeString();
+            entry.textContent = `[${time}] ${message}`;
+            logPanel.appendChild(entry);
+            logPanel.scrollTop = logPanel.scrollHeight;
+        }
+
+        function setStatus(text) {
+            statusTextEl.textContent = text;
+        }
+
+        function connect() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            roomId = document.getElementById('roomId').value;
+            const playerName = document.getElementById('playerName').value;
+
+            try {
+                ws = new WebSocket(serverUrl);
+
+                ws.onopen = () => {
+                    isConnected = true;
+                    log('WebSocket 连接成功', 'success');
+                    setStatus('已连接');
+
+                    const joinMsg = {
+                        type: 'player_join',
+                        payload: {
+                            roomId: roomId,
+                            playerName: playerName
+                        }
+                    };
+                    ws.send(JSON.stringify(joinMsg));
+                    log(`加入房间: ${roomId}`, 'info');
+
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('disconnectBtn').disabled = false;
+                    document.getElementById('reconnectBtn').disabled = false;
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleMessage(message);
+                    } catch (e) {
+                        log('消息解析失败: ' + e.message, 'error');
+                    }
+                };
+
+                ws.onclose = () => {
+                    isConnected = false;
+                    log('连接已断开', 'warning');
+                    setStatus('已断开');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                };
+
+                ws.onerror = (error) => {
+                    log('连接错误', 'error');
+                    setStatus('错误');
+                };
+            } catch (e) {
+                log('连接失败: ' + e.message, 'error');
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function simulateReconnect() {
+            log('模拟断线...', 'warning');
+            const savedPlayerId = playerId;
+            const savedLastTick = lastTick;
+
+            if (ws) {
+                ws.close();
+            }
+
+            setTimeout(() => {
+                log(`重新连接... (上次 Tick: ${savedLastTick})`, 'info');
+                const serverUrl = document.getElementById('serverUrl').value;
+
+                ws = new WebSocket(serverUrl + '?playerId=' + savedPlayerId);
+
+                ws.onopen = () => {
+                    log('重连成功，发送重连请求', 'success');
+                    const reconnectMsg = {
+                        type: 'reconnect_request',
+                        payload: {
+                            roomId: roomId,
+                            lastKnownTick: savedLastTick
+                        }
+                    };
+                    ws.send(JSON.stringify(reconnectMsg));
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleMessage(message);
+                    } catch (e) {
+                        log('消息解析失败: ' + e.message, 'error');
+                    }
+                };
+
+                ws.onclose = () => {
+                    log('连接已断开', 'warning');
+                };
+            }, 1000);
+        }
+
+        function handleMessage(message) {
+            switch (message.type) {
+                case 'room_info':
+                    playerId = message.payload.playerId;
+                    log(`房间信息: playerId=${playerId}, tickRate=${message.payload.tickRate}`, 'success');
+                    break;
+
+                case 'snapshot':
+                    handleSnapshot(message.payload);
+                    break;
+
+                case 'delta':
+                    handleDelta(message.payload);
+                    break;
+
+                case 'reconnect_response':
+                    handleReconnectResponse(message.payload);
+                    break;
+
+                case 'error':
+                    log('服务器错误: ' + message.payload.message, 'error');
+                    break;
+
+                default:
+                    log(`未知消息类型: ${message.type}`, 'warning');
+            }
+        }
+
+        function handleSnapshot(snapshot) {
+            lastTick = snapshot.tick;
+            tickCountEl.textContent = snapshot.tick;
+
+            players = {};
+            for (const player of snapshot.state.players) {
+                players[player.id] = player;
+            }
+
+            playerCountEl.textContent = snapshot.state.players.length;
+            renderPlayers();
+        }
+
+        function handleDelta(delta) {
+            lastTick = delta.tick;
+            tickCountEl.textContent = delta.tick;
+
+            for (const player of delta.changedPlayers) {
+                players[player.id] = player;
+            }
+
+            for (const playerId of delta.removedPlayers) {
+                delete players[playerId];
+            }
+
+            playerCountEl.textContent = Object.keys(players).length;
+            renderPlayers();
+        }
+
+        function handleReconnectResponse(payload) {
+            if (payload.success) {
+                log(`重连成功! 同步类型: ${payload.syncType}, Tick: ${payload.tick}`, 'success');
+                lastTick = payload.tick;
+
+                if (payload.state) {
+                    players = {};
+                    for (const p of payload.state.players) {
+                        players[p.id] = p;
+                    }
+                    playerCountEl.textContent = payload.state.players.length;
+                    renderPlayers();
+                }
+
+                const joinMsg = {
+                    type: 'player_join',
+                    payload: {
+                        roomId: roomId,
+                        playerName: document.getElementById('playerName').value
+                    }
+                };
+                ws.send(JSON.stringify(joinMsg));
+            } else {
+                log(`重连失败: ${payload.reason}`, 'error');
+            }
+        }
+
+        function renderPlayers() {
+            gameCanvas.innerHTML = '';
+            const canvasRect = gameCanvas.getBoundingClientRect();
+            const centerX = canvasRect.width / 2;
+            const centerY = canvasRect.height / 2;
+            const scale = 2;
+
+            for (const id in players) {
+                const player = players[id];
+                const screenX = centerX + player.position.x * scale;
+                const screenY = centerY + player.position.y * scale;
+
+                const dot = document.createElement('div');
+                dot.className = 'player-dot' + (id === playerId ? ' self' : '');
+                dot.style.left = screenX + 'px';
+                dot.style.top = screenY + 'px';
+                gameCanvas.appendChild(dot);
+
+                const label = document.createElement('div');
+                label.className = 'player-label';
+                label.style.left = screenX + 'px';
+                label.style.top = screenY + 'px';
+                label.textContent = `${player.name} (${player.score})`;
+                gameCanvas.appendChild(label);
+            }
+        }
+
+        function sendInput() {
+            if (!ws || !isConnected) return;
+
+            inputTick++;
+            const msg = {
+                type: 'player_input',
+                payload: {
+                    roomId: roomId,
+                    input: {
+                        playerId: playerId,
+                        tickNumber: inputTick,
+                        timestamp: Date.now(),
+                        moveDir: { ...moveDir }
+                    }
+                }
+            };
+            ws.send(JSON.stringify(msg));
+        }
+
+        function sendAction(action) {
+            if (!ws || !isConnected) return;
+
+            inputTick++;
+            const msg = {
+                type: 'player_input',
+                payload: {
+                    roomId: roomId,
+                    input: {
+                        playerId: playerId,
+                        tickNumber: inputTick,
+                        timestamp: Date.now(),
+                        action: action
+                    }
+                }
+            };
+            ws.send(JSON.stringify(msg));
+        }
+
+        document.getElementById('connectBtn').addEventListener('click', connect);
+        document.getElementById('disconnectBtn').addEventListener('click', disconnect);
+        document.getElementById('reconnectBtn').addEventListener('click', simulateReconnect);
+        document.getElementById('jumpBtn').addEventListener('click', () => sendAction('jump'));
+
+        const dirButtons = document.querySelectorAll('.dir-btn');
+        dirButtons.forEach(btn => {
+            const dir = btn.dataset.dir;
+
+            btn.addEventListener('mousedown', () => {
+                setMoveDir(dir, true);
+            });
+            btn.addEventListener('mouseup', () => {
+                setMoveDir(dir, false);
+            });
+            btn.addEventListener('mouseleave', () => {
+                setMoveDir(dir, false);
+            });
+
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                setMoveDir(dir, true);
+            });
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                setMoveDir(dir, false);
+            });
+        });
+
+        function setMoveDir(dir, pressed) {
+            switch (dir) {
+                case 'up': moveDir.y = pressed ? -1 : 0; break;
+                case 'down': moveDir.y = pressed ? 1 : 0; break;
+                case 'left': moveDir.x = pressed ? -1 : 0; break;
+                case 'right': moveDir.x = pressed ? 1 : 0; break;
+            }
+            sendInput();
+        }
+
+        document.addEventListener('keydown', (e) => {
+            switch (e.key) {
+                case 'ArrowUp': case 'w': case 'W': moveDir.y = -1; break;
+                case 'ArrowDown': case 's': case 'S': moveDir.y = 1; break;
+                case 'ArrowLeft': case 'a': case 'A': moveDir.x = -1; break;
+                case 'ArrowRight': case 'd': case 'D': moveDir.x = 1; break;
+                case ' ': sendAction('jump'); return;
+                default: return;
+            }
+            e.preventDefault();
+            sendInput();
+        });
+
+        document.addEventListener('keyup', (e) => {
+            switch (e.key) {
+                case 'ArrowUp': case 'w': case 'W':
+                case 'ArrowDown': case 's': case 'S':
+                    moveDir.y = 0;
+                    break;
+                case 'ArrowLeft': case 'a': case 'A':
+                case 'ArrowRight': case 'd': case 'D':
+                    moveDir.x = 0;
+                    break;
+                default: return;
+            }
+            e.preventDefault();
+            sendInput();
+        });
+
+        setInterval(() => {
+            if (isConnected && (moveDir.x !== 0 || moveDir.y !== 0)) {
+                sendInput();
+            }
+        }, 50);
+    </script>
+</body>
+</html>

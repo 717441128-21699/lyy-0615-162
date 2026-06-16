@@ -1,5 +1,4 @@
-import { SnapshotData, DeltaUpdate, RoomStateData } from '../types';
-import { RoomManager } from '../core/RoomManager';
+import { RoomManager, ReconnectStateResult } from '../core/RoomManager';
 import { ConnectionManager } from '../network/ConnectionManager';
 
 interface ReconnectSession {
@@ -14,23 +13,18 @@ export class ReconnectManager {
   private roomManager: RoomManager;
   private connectionManager: ConnectionManager;
   private activeSessions: Map<string, ReconnectSession> = new Map();
-  private maxTickGapForDelta: number = 60;
   private reconnectTimeout: number = 30000;
 
   constructor(
     roomManager: RoomManager,
     connectionManager: ConnectionManager,
     options?: {
-      maxTickGapForDelta?: number;
       reconnectTimeout?: number;
     }
   ) {
     this.roomManager = roomManager;
     this.connectionManager = connectionManager;
 
-    if (options?.maxTickGapForDelta) {
-      this.maxTickGapForDelta = options.maxTickGapForDelta;
-    }
     if (options?.reconnectTimeout) {
       this.reconnectTimeout = options.reconnectTimeout;
     }
@@ -52,37 +46,28 @@ export class ReconnectManager {
     this.activeSessions.set(playerId, session);
 
     try {
-      const { snapshot, currentTick } = await this.roomManager.getSnapshotForReconnect(
-        roomId,
+      const result: ReconnectStateResult | null = await this.roomManager.reconnectAndGetState(
         playerId,
-        lastKnownTick
+        roomId
       );
 
-      if (!snapshot) {
+      if (!result || !result.player) {
         this.sendReconnectResponse(playerId, {
           success: false,
-          reason: 'no_snapshot_available',
-          currentTick: 0,
+          reason: 'player_not_found_in_room',
+          currentTick: result?.tick || 0,
         });
         return;
       }
 
       session.state = 'syncing';
 
-      const tickGap = currentTick - lastKnownTick;
-
-      if (tickGap <= this.maxTickGapForDelta && lastKnownTick > 0) {
-        this.sendDeltaSync(playerId, snapshot, lastKnownTick);
-      } else {
-        this.sendFullSync(playerId, snapshot);
-      }
-
-      this.roomManager.reconnectRoom(playerId, roomId);
+      this.sendFullSync(playerId, result.state, result.tick, result.player);
 
       session.state = 'completed';
 
       console.log(
-        `[ReconnectManager] Player ${playerId} reconnected to room ${roomId}, tick gap: ${tickGap}`
+        `[ReconnectManager] Player ${playerId} reconnected to room ${roomId}, tick=${result.tick}, pos=(${result.player.position.x.toFixed(1)}, ${result.player.position.y.toFixed(1)}), score=${result.player.score}`
       );
     } catch (error) {
       console.error('[ReconnectManager] Reconnect failed:', error);
@@ -98,43 +83,23 @@ export class ReconnectManager {
     }
   }
 
-  private sendFullSync(playerId: string, snapshot: SnapshotData): void {
-    this.connectionManager.sendToPlayer(playerId, {
-      type: 'reconnect_response',
-      payload: {
-        success: true,
-        syncType: 'full',
-        tick: snapshot.tick,
-        timestamp: snapshot.timestamp,
-        state: snapshot.state,
-      },
-    });
-
-    console.log(
-      `[ReconnectManager] Full sync sent to player ${playerId} at tick ${snapshot.tick}`
-    );
-  }
-
-  private sendDeltaSync(
+  private sendFullSync(
     playerId: string,
-    latestSnapshot: SnapshotData,
-    lastKnownTick: number
+    state: any,
+    tick: number,
+    selfPlayer: any
   ): void {
     this.connectionManager.sendToPlayer(playerId, {
       type: 'reconnect_response',
       payload: {
         success: true,
-        syncType: 'delta',
-        tick: latestSnapshot.tick,
-        timestamp: latestSnapshot.timestamp,
-        state: latestSnapshot.state,
-        lastKnownTick,
+        syncType: 'full',
+        tick,
+        timestamp: Date.now(),
+        state,
+        selfPlayer,
       },
     });
-
-    console.log(
-      `[ReconnectManager] Delta sync sent to player ${playerId}: ${lastKnownTick} -> ${latestSnapshot.tick}`
-    );
   }
 
   private sendReconnectResponse(playerId: string, payload: any): void {

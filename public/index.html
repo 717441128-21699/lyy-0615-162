@@ -176,7 +176,7 @@
             <h2>🎮 连接设置</h2>
             <div class="form-group">
                 <label>服务器地址</label>
-                <input type="text" id="serverUrl" value="ws://localhost:8080">
+                <input type="text" id="serverUrl" value="ws://localhost:3000">
             </div>
             <div class="form-group">
                 <label>房间 ID</label>
@@ -318,23 +318,24 @@
             log('模拟断线...', 'warning');
             const savedPlayerId = playerId;
             const savedLastTick = lastTick;
+            const savedRoomId = roomId;
 
             if (ws) {
                 ws.close();
             }
 
             setTimeout(() => {
-                log(`重新连接... (上次 Tick: ${savedLastTick})`, 'info');
+                log(`重新连接... playerId=${savedPlayerId}, 上次 Tick: ${savedLastTick}`, 'info');
                 const serverUrl = document.getElementById('serverUrl').value;
 
                 ws = new WebSocket(serverUrl + '?playerId=' + savedPlayerId);
 
                 ws.onopen = () => {
-                    log('重连成功，发送重连请求', 'success');
+                    log('WebSocket 重连成功，发送重连请求', 'success');
                     const reconnectMsg = {
                         type: 'reconnect_request',
                         payload: {
-                            roomId: roomId,
+                            roomId: savedRoomId,
                             lastKnownTick: savedLastTick
                         }
                     };
@@ -351,7 +352,14 @@
                 };
 
                 ws.onclose = () => {
-                    log('连接已断开', 'warning');
+                    isConnected = false;
+                    log('重连连接已断开', 'warning');
+                    setStatus('已断开');
+                };
+
+                ws.onerror = () => {
+                    log('重连连接错误', 'error');
+                    setStatus('错误');
                 };
             }, 1000);
         }
@@ -415,7 +423,6 @@
 
         function handleReconnectResponse(payload) {
             if (payload.success) {
-                log(`重连成功! 同步类型: ${payload.syncType}, Tick: ${payload.tick}, 位置和分数已恢复`, 'success');
                 lastTick = payload.tick;
                 isConnected = true;
                 setStatus('已连接（重连恢复）');
@@ -429,15 +436,21 @@
                     for (const p of payload.state.players) {
                         players[p.id] = p;
                     }
-                    const self = players[playerId];
-                    if (self) {
-                        log(`恢复角色: ${self.name}, 位置=(${self.position.x.toFixed(1)}, ${self.position.y.toFixed(1)}), 分数=${self.score}`, 'success');
+                    if (payload.selfPlayer && !players[payload.selfPlayer.id]) {
+                        players[payload.selfPlayer.id] = payload.selfPlayer;
                     }
-                    playerCountEl.textContent = payload.state.players.length;
+                    playerCountEl.textContent = Object.keys(players).length;
                     renderPlayers();
                 }
 
-                log('重连完成，继续游戏。移动和跳跃会正常广播给其他玩家。', 'info');
+                const self = payload.selfPlayer || players[playerId];
+                if (self) {
+                    log(`重连成功! 角色: ${self.name}, 位置=(${self.position.x.toFixed(1)}, ${self.position.y.toFixed(1)}), 分数=${self.score}`, 'success');
+                } else {
+                    log('重连成功! 但未找到角色信息', 'warning');
+                }
+
+                log('重连完成，输入已生效，移动和跳跃正常广播', 'info');
             } else {
                 log(`重连失败: ${payload.reason}`, 'error');
                 setStatus('重连失败');

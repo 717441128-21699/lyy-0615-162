@@ -8,7 +8,6 @@ import {
   DeltaUpdate,
   GameConfig,
   DEFAULT_CONFIG,
-  Vector2,
 } from '../types';
 
 interface BufferedInput {
@@ -17,48 +16,47 @@ interface BufferedInput {
 }
 
 interface GameLogicModule {
-  updatePlayerPhysics: (
-    player: PlayerState,
-    input: PlayerInput | undefined,
-    deltaTime: number
-  ) => void;
-  processPlayerAction: (
-    player: PlayerState,
-    action: string,
-    params?: any
-  ) => void;
+  updatePlayerPhysics: (player: PlayerState, input: PlayerInput | undefined, deltaTime: number) => void;
+  processPlayerAction: (player: PlayerState, action: string, params?: any) => void;
 }
 
-function loadGameLogic(): GameLogicModule {
+function tryLoadGameLogic(): GameLogicModule | null {
   const gameLogicPath = path.resolve(__dirname, '../game/GameLogic.js');
   try {
     delete require.cache[require.resolve(gameLogicPath)];
     const module = require(gameLogicPath);
-    console.log(`[RoomWorker] GameLogic loaded successfully`);
+    if (typeof module.updatePlayerPhysics !== 'function') {
+      throw new Error('GameLogic module missing updatePlayerPhysics export');
+    }
+    console.log('[RoomWorker] GameLogic loaded successfully');
     return module;
   } catch (error) {
-    console.error('[RoomWorker] Failed to load GameLogic, using fallback:', (error as Error).message);
-    return {
-      updatePlayerPhysics: (player, input, deltaTime) => {
-        const speed = 0.1;
-        if (input?.moveDir) {
-          const length = Math.sqrt(input.moveDir.x ** 2 + input.moveDir.y ** 2);
-          if (length > 0) {
-            player.velocity.x = (input.moveDir.x / length) * speed * deltaTime;
-            player.velocity.y = (input.moveDir.y / length) * speed * deltaTime;
-          }
-        }
-        if (input?.action === 'jump') player.score += 1;
-        player.position.x += player.velocity.x;
-        player.position.y += player.velocity.y;
-        player.velocity.x *= 0.9;
-        player.velocity.y *= 0.9;
-        player.position.x = Math.max(-100, Math.min(100, player.position.x));
-        player.position.y = Math.max(-100, Math.min(100, player.position.y));
-      },
-      processPlayerAction: () => {},
-    };
+    console.error('[RoomWorker] Failed to load GameLogic:', (error as Error).message);
+    return null;
   }
+}
+
+function createBuiltinGameLogic(): GameLogicModule {
+  return {
+    updatePlayerPhysics(player, input, deltaTime) {
+      const speed = 0.1;
+      if (input?.moveDir) {
+        const length = Math.sqrt(input.moveDir.x ** 2 + input.moveDir.y ** 2);
+        if (length > 0) {
+          player.velocity.x = (input.moveDir.x / length) * speed * deltaTime;
+          player.velocity.y = (input.moveDir.y / length) * speed * deltaTime;
+        }
+      }
+      if (input?.action === 'jump') player.score += 1;
+      player.position.x += player.velocity.x;
+      player.position.y += player.velocity.y;
+      player.velocity.x *= 0.9;
+      player.velocity.y *= 0.9;
+      player.position.x = Math.max(-100, Math.min(100, player.position.x));
+      player.position.y = Math.max(-100, Math.min(100, player.position.y));
+    },
+    processPlayerAction() {},
+  };
 }
 
 class RoomWorker {
@@ -94,7 +92,12 @@ class RoomWorker {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.fixedDeltaTime = 1000 / this.config.tickRate;
     this.tickTimeBudget = this.fixedDeltaTime * 0.8;
-    this.gameLogic = loadGameLogic();
+
+    const loaded = tryLoadGameLogic();
+    this.gameLogic = loaded || createBuiltinGameLogic();
+    if (loaded) {
+      this.gameLogicVersion = 1;
+    }
   }
 
   start(): void {
@@ -138,7 +141,7 @@ class RoomWorker {
     }
 
     this.sendToParent('player_joined', { player, tickCount: this.tickCount });
-    this.broadcastDeltaWithPlayer(playerId);
+    this.broadcastDeltaImmediate();
     return player;
   }
 
@@ -147,6 +150,11 @@ class RoomWorker {
     if (!player) {
       console.warn(`[RoomWorker ${this.roomId}] Cannot reconnect: player ${playerId} not found`);
       return null;
+    }
+
+    if (!this.offlinePlayers.has(playerId)) {
+      console.log(`[RoomWorker ${this.roomId}] Player ${playerId} already online, skip reconnect`);
+      return player;
     }
 
     this.offlinePlayers.delete(playerId);
@@ -159,13 +167,15 @@ class RoomWorker {
       tickCount: this.tickCount,
     });
 
-    this.broadcastDeltaWithPlayer(playerId);
+    this.broadcastDeltaImmediate();
     return player;
   }
 
   markPlayerOffline(playerId: string): void {
     const player = this.players.get(playerId);
     if (!player) return;
+
+    if (this.offlinePlayers.has(playerId)) return;
 
     this.offlinePlayers.add(playerId);
     this.lastRemovedPlayers.push(playerId);
@@ -219,16 +229,36 @@ class RoomWorker {
   }
 
   reloadGameLogic(): { success: boolean; error?: string; version: number } {
-    try {
-      this.gameLogic = loadGameLogic();
-      this.gameLogicVersion++;
-      console.log(`[RoomWorker ${this.roomId}] GameLogic reloaded, version=${this.gameLogicVersion}`);
-      return { success: true, version: this.gameLogicVersion };
-    } catch (error) {
-      const msg = (error as Error).message;
-      console.error(`[RoomWorker ${this.roomId}] GameLogic reload failed: ${msg}`);
+    const newLogic = tryLoadGameLogic();
+    if (!newLogic) {
+      const msg = 'GameLogic file failed to load or validate, keeping previous logic';
+      console.error(`[RoomWorker ${this.roomId}] ${msg}`);
       return { success: false, error: msg, version: this.gameLogicVersion };
     }
+
+    this.gameLogic = newLogic;
+    this.gameLogicVersion++;
+    console.log(`[RoomWorker ${this.roomId}] GameLogic reloaded, version=${this.gameLogicVersion}`);
+    return { success: true, version: this.gameLogicVersion };
+  }
+
+  getReconnectState(playerId: string): { state: RoomStateData; player: PlayerState | null; tick: number } {
+    if (this.offlinePlayers.has(playerId)) {
+      this.offlinePlayers.delete(playerId);
+      this.inputBuffer.set(playerId, []);
+      console.log(`[RoomWorker ${this.roomId}] Player ${playerId} reconnected via getReconnectState at tick ${this.tickCount}`);
+
+      this.sendToParent('player_reconnected', {
+        player: this.players.get(playerId),
+        tickCount: this.tickCount,
+      });
+
+      this.broadcastDeltaImmediate();
+    }
+
+    const state = this.getOnlineRoomState();
+    const player = this.players.get(playerId) || null;
+    return { state, player, tick: this.tickCount };
   }
 
   private tick(): void {
@@ -312,27 +342,23 @@ class RoomWorker {
   }
 
   private takeSnapshot(): void {
-    const snapshot: SnapshotData = {
+    const broadcastSnapshot: SnapshotData = {
       tick: this.tickCount,
       timestamp: Date.now(),
-      state: this.getRoomStateData(true),
+      state: this.getOnlineRoomState(),
     };
 
-    this.snapshots.push(snapshot);
+    this.snapshots.push(broadcastSnapshot);
     this.lastSnapshotTick = this.tickCount;
 
     if (this.snapshots.length > 120) {
       this.snapshots.shift();
     }
 
-    this.sendToParent('snapshot', snapshot);
+    this.sendToParent('snapshot', broadcastSnapshot);
   }
 
   private broadcastDeltaImmediate(): void {
-    this.broadcastDelta(true);
-  }
-
-  private broadcastDeltaWithPlayer(changedPlayerId: string): void {
     this.broadcastDelta(true);
   }
 
@@ -380,12 +406,12 @@ class RoomWorker {
     return {
       tick: this.tickCount,
       timestamp: Date.now(),
-      state: this.getRoomStateData(true),
+      state: this.getOnlineRoomState(),
     };
   }
 
   getCurrentState(): RoomStateData {
-    return this.getRoomStateData(true);
+    return this.getOnlineRoomState();
   }
 
   getPlayerState(playerId: string): PlayerState | null {
@@ -400,10 +426,10 @@ class RoomWorker {
     return count;
   }
 
-  private getRoomStateData(includeAll: boolean = false): RoomStateData {
+  private getOnlineRoomState(): RoomStateData {
     const players: PlayerState[] = [];
     for (const [id, player] of this.players) {
-      if (!includeAll && this.offlinePlayers.has(id)) continue;
+      if (this.offlinePlayers.has(id)) continue;
       players.push({ ...player });
     }
 
@@ -444,10 +470,6 @@ if (parentPort) {
           roomWorker?.addPlayer(payload.playerId, payload.playerName);
           break;
 
-        case 'player_reconnect':
-          roomWorker?.reconnectPlayer(payload.playerId);
-          break;
-
         case 'player_offline':
           roomWorker?.markPlayerOffline(payload.playerId);
           break;
@@ -467,6 +489,18 @@ if (parentPort) {
               type: 'snapshot_response',
               roomId: roomWorker ? (roomWorker as any).roomId : '',
               payload: { snapshot, requestId: payload.requestId },
+            });
+          }
+          break;
+        }
+
+        case 'reconnect_and_get_state': {
+          const result = roomWorker?.getReconnectState(payload.playerId);
+          if (parentPort) {
+            parentPort.postMessage({
+              type: 'reconnect_state_response',
+              roomId: roomWorker ? (roomWorker as any).roomId : '',
+              payload: { ...result, requestId: payload.requestId },
             });
           }
           break;

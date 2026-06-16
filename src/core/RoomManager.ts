@@ -7,6 +7,7 @@ import {
   DeltaUpdate,
   PlayerInput,
   RoomStateData,
+  PlayerState,
 } from '../types';
 import { ConnectionManager } from '../network/ConnectionManager';
 
@@ -20,6 +21,7 @@ interface RoomInfo {
   latestDelta: DeltaUpdate | null;
   pendingSnapshotRequests: Map<string, (snapshot: SnapshotData | null) => void>;
   pendingHotReloadRequests: Map<string, (result: any) => void>;
+  pendingReconnectRequests: Map<string, (result: any) => void>;
   gameLogicVersion: number;
 }
 
@@ -35,6 +37,12 @@ export interface HotReloadResult {
     version?: number;
     error?: string;
   }>;
+}
+
+export interface ReconnectStateResult {
+  state: RoomStateData;
+  player: PlayerState | null;
+  tick: number;
 }
 
 export class RoomManager {
@@ -65,6 +73,7 @@ export class RoomManager {
       latestDelta: null,
       pendingSnapshotRequests: new Map(),
       pendingHotReloadRequests: new Map(),
+      pendingReconnectRequests: new Map(),
       gameLogicVersion: 0,
     };
 
@@ -108,18 +117,6 @@ export class RoomManager {
     });
   }
 
-  reconnectRoom(playerId: string, roomId: string): void {
-    const room = this.rooms.get(roomId);
-    if (!room) {
-      console.warn(`[RoomManager] Cannot reconnect player ${playerId}: room ${roomId} not found`);
-      return;
-    }
-    room.worker.postMessage({
-      type: 'player_reconnect',
-      payload: { playerId },
-    });
-  }
-
   markPlayerOffline(playerId: string, roomId: string): void {
     const room = this.rooms.get(roomId);
     if (!room) return;
@@ -149,6 +146,39 @@ export class RoomManager {
     }
   }
 
+  async reconnectAndGetState(
+    playerId: string,
+    roomId: string,
+    timeoutMs: number = 3000
+  ): Promise<ReconnectStateResult | null> {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      console.warn(`[RoomManager] Cannot reconnect: room ${roomId} not found`);
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      const requestId = `rc_${playerId}_${Date.now()}`;
+
+      const timer = setTimeout(() => {
+        if (room.pendingReconnectRequests.has(requestId)) {
+          room.pendingReconnectRequests.delete(requestId);
+          resolve(null);
+        }
+      }, timeoutMs);
+
+      room.pendingReconnectRequests.set(requestId, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+
+      room.worker.postMessage({
+        type: 'reconnect_and_get_state',
+        payload: { playerId, requestId },
+      });
+    });
+  }
+
   private handleWorkerMessage(roomId: string, message: any): void {
     const { type, payload } = message;
     const room = this.rooms.get(roomId);
@@ -164,11 +194,6 @@ export class RoomManager {
       case 'delta':
         room.latestDelta = payload as DeltaUpdate;
         this.broadcastDelta(roomId, payload);
-        if (room.latestSnapshot) {
-          room.playerCount = room.latestSnapshot.state.players.filter(
-            (p: any) => !payload.removedPlayers.includes(p.id)
-          ).length;
-        }
         break;
 
       case 'player_joined':
@@ -177,7 +202,8 @@ export class RoomManager {
         break;
 
       case 'player_reconnected':
-        console.log(`[RoomManager] Player reconnected to room ${roomId}:`, payload.player.id);
+        console.log(`[RoomManager] Player reconnected to room ${roomId}:`, payload.player?.id);
+        room.playerCount++;
         break;
 
       case 'player_offline':
@@ -187,7 +213,6 @@ export class RoomManager {
 
       case 'player_left':
         console.log(`[RoomManager] Player permanently left room ${roomId}:`, payload.playerId);
-        room.playerCount = Math.max(0, room.playerCount - 1);
         break;
 
       case 'snapshot_response': {
@@ -196,6 +221,20 @@ export class RoomManager {
         if (callback) {
           callback(payload.snapshot);
           room.pendingSnapshotRequests.delete(requestId);
+        }
+        break;
+      }
+
+      case 'reconnect_state_response': {
+        const requestId = payload.requestId;
+        const callback = room.pendingReconnectRequests.get(requestId);
+        if (callback) {
+          callback({
+            state: payload.state,
+            player: payload.player,
+            tick: payload.tick,
+          });
+          room.pendingReconnectRequests.delete(requestId);
         }
         break;
       }
@@ -299,7 +338,6 @@ export class RoomManager {
       };
     }
 
-    const results: any[] = [];
     const promises = rooms.map(
       (room) =>
         new Promise<any>((resolve) => {

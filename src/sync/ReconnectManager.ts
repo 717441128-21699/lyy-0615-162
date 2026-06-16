@@ -14,7 +14,7 @@ export class ReconnectManager {
   private roomManager: RoomManager;
   private connectionManager: ConnectionManager;
   private activeSessions: Map<string, ReconnectSession> = new Map();
-  private maxTickGapForDelta: number = 30;
+  private maxTickGapForDelta: number = 60;
   private reconnectTimeout: number = 30000;
 
   constructor(
@@ -67,6 +67,8 @@ export class ReconnectManager {
         return;
       }
 
+      session.state = 'syncing';
+
       const tickGap = currentTick - lastKnownTick;
 
       if (tickGap <= this.maxTickGapForDelta && lastKnownTick > 0) {
@@ -75,7 +77,13 @@ export class ReconnectManager {
         this.sendFullSync(playerId, snapshot);
       }
 
+      this.roomManager.reconnectRoom(playerId, roomId);
+
       session.state = 'completed';
+
+      console.log(
+        `[ReconnectManager] Player ${playerId} reconnected to room ${roomId}, tick gap: ${tickGap}`
+      );
     } catch (error) {
       console.error('[ReconnectManager] Reconnect failed:', error);
       this.sendReconnectResponse(playerId, {

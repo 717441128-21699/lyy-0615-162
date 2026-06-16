@@ -130,12 +130,32 @@ export class HotReloader extends EventEmitter {
     }
   }
 
+  public clearMainProcessCache(): void {
+    const gameDir = path.resolve(process.cwd(), 'src', 'game');
+    if (!fs.existsSync(gameDir)) return;
+
+    const cleared: string[] = [];
+    for (const key of Object.keys(require.cache)) {
+      if (key.startsWith(gameDir) || key.includes(path.sep + 'game' + path.sep)) {
+        delete require.cache[key];
+        cleared.push(path.basename(key));
+      }
+    }
+    if (cleared.length > 0) {
+      console.log(`[HotReloader] Cleared main process cache for: ${cleared.join(', ')}`);
+    }
+  }
+
   private clearRequireCache(files: string[]): void {
     for (const file of files) {
-      const resolved = require.resolve(file);
-      if (require.cache[resolved]) {
-        delete require.cache[resolved];
-        console.log(`[HotReloader] Cleared cache: ${path.basename(file)}`);
+      try {
+        const resolved = require.resolve(file);
+        if (require.cache[resolved]) {
+          delete require.cache[resolved];
+          console.log(`[HotReloader] Cleared cache: ${path.basename(file)}`);
+        }
+      } catch {
+        // ignore if module not found
       }
     }
   }

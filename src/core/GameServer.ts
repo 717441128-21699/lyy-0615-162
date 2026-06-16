@@ -3,7 +3,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectionManager } from '../network/ConnectionManager';
-import { RoomManager } from '../core/RoomManager';
+import { RoomManager, HotReloadResult } from '../core/RoomManager';
 import { HotReloader } from '../hot-reload/HotReloader';
 import { ReconnectManager } from '../sync/ReconnectManager';
 import { GameConfig, DEFAULT_CONFIG, PlayerInput } from '../types';
@@ -68,6 +68,9 @@ export class GameServer {
       onReconnect: (player: Player, roomId: string, lastTick: number) => {
         this.handleReconnect(player, roomId, lastTick);
       },
+      onPlayerDisconnected: (player: Player, roomId: string) => {
+        this.handlePlayerDisconnected(player, roomId);
+      },
       getPlayer: (playerId: string) => {
         return this.connectionManager.getPlayer(playerId);
       },
@@ -78,8 +81,23 @@ export class GameServer {
   }
 
   private setupHotReloadHandlers(): void {
-    this.hotReloader.on('reload', (data: any) => {
-      console.log('[GameServer] Hot reload triggered:', data);
+    this.hotReloader.on('reload', async (data: any) => {
+      console.log('[GameServer] Hot reload triggered by file watcher, reloading rooms...');
+      try {
+        const result = await this.roomManager.hotReloadAllRooms();
+        console.log(
+          `[GameServer] Hot reload complete: ${result.succeeded}/${result.totalRooms} rooms succeeded, ${result.failed} failed`
+        );
+        if (!result.success) {
+          for (const r of result.roomResults) {
+            if (!r.success) {
+              console.warn(`  - Room ${r.roomId} (${r.roomName}) failed: ${r.error}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[GameServer] Hot reload error (caught, server continues):', error);
+      }
     });
   }
 
@@ -98,8 +116,13 @@ export class GameServer {
   }
 
   private handlePlayerLeave(player: Player, roomId: string): void {
-    console.log(`[GameServer] Player ${player.id} leaving room ${roomId}`);
+    console.log(`[GameServer] Player ${player.id} permanently leaving room ${roomId}`);
     this.roomManager.leaveRoom(player.id, roomId);
+  }
+
+  private handlePlayerDisconnected(player: Player, roomId: string): void {
+    console.log(`[GameServer] Player ${player.id} disconnected from room ${roomId} - marking offline`);
+    this.roomManager.markPlayerOffline(player.id, roomId);
   }
 
   private handlePlayerInput(player: Player, roomId: string, input: any): void {
@@ -130,6 +153,20 @@ export class GameServer {
     const url = req.url || '/';
 
     if (url === '/status') {
+      this.handleStatusRequest(res);
+      return;
+    }
+
+    if (url === '/hot-reload' || url === '/hot-reload/') {
+      this.handleHotReloadRequest(res);
+      return;
+    }
+
+    this.serveStaticFile(url, res);
+  }
+
+  private handleStatusRequest(res: http.ServerResponse): void {
+    try {
       const status = {
         running: this.isRunning,
         rooms: this.roomManager.getRoomList(),
@@ -140,17 +177,60 @@ export class GameServer {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status, null, 2));
-      return;
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: (error as Error).message }));
     }
+  }
 
-    if (url === '/hot-reload') {
-      this.hotReloader.manualReload();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, message: 'Hot reload triggered' }));
-      return;
+  private async handleHotReloadRequest(res: http.ServerResponse): Promise<void> {
+    try {
+      console.log('[GameServer] Hot reload requested via HTTP API');
+
+      this.hotReloader.clearMainProcessCache();
+
+      const result: HotReloadResult = await this.roomManager.hotReloadAllRooms(5000);
+
+      const httpStatus = result.success ? 200 : 500;
+
+      const response = {
+        ok: result.success,
+        message: result.success
+          ? `Hot reload succeeded: ${result.succeeded}/${result.totalRooms} rooms`
+          : `Hot reload partially failed: ${result.failed}/${result.totalRooms} rooms failed`,
+        succeeded: result.succeeded,
+        failed: result.failed,
+        totalRooms: result.totalRooms,
+        details: result.roomResults.map((r) => ({
+          roomId: r.roomId,
+          roomName: r.roomName,
+          success: r.success,
+          version: r.version,
+          error: r.error,
+        })),
+      };
+
+      res.writeHead(httpStatus, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(response, null, 2));
+
+      console.log(
+        `[GameServer] Hot reload API response: ${response.ok ? 'OK' : 'FAILED'} - ${response.message}`
+      );
+    } catch (error) {
+      console.error('[GameServer] Hot reload API error (caught):', error);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify(
+          {
+            ok: false,
+            message: 'Hot reload failed with exception',
+            error: (error as Error).message,
+          },
+          null,
+          2
+        )
+      );
     }
-
-    this.serveStaticFile(url, res);
   }
 
   private serveStaticFile(url: string, res: http.ServerResponse): void {
@@ -208,7 +288,8 @@ export class GameServer {
         console.log(`[GameServer] Server started on port ${this.port}`);
         console.log(`[GameServer] WebSocket: ws://localhost:${this.port}`);
         console.log(`[GameServer] Status: http://localhost:${this.port}/status`);
-        console.log(`[GameServer] Tick rate: ${this.config.tickRate} ticks/sec`);
+        console.log(`[GameServer] Hot-Reload: http://localhost:${this.port}/hot-reload`);
+        console.log(`[GameServer] Tick rate: ${this.config.tickRate} ticks/sec (fixed step)`);
 
         this.hotReloader.start();
 

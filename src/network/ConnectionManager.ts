@@ -9,6 +9,7 @@ export interface ConnectionHandler {
   onPlayerLeave: (player: Player, roomId: string) => void;
   onPlayerInput: (player: Player, roomId: string, input: any) => void;
   onReconnect: (player: Player, roomId: string, lastTick: number) => void;
+  onPlayerDisconnected: (player: Player, roomId: string) => void;
   getPlayer: (playerId: string) => Player | undefined;
   getRoomPlayers: (roomId: string) => Player[];
 }
@@ -16,6 +17,8 @@ export interface ConnectionHandler {
 export class ConnectionManager {
   private players: Map<string, Player> = new Map();
   private handler: ConnectionHandler | null = null;
+  private disconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+  private readonly DISCONNECT_TIMEOUT_MS: number = 30000;
 
   setHandler(handler: ConnectionHandler): void {
     this.handler = handler;
@@ -28,6 +31,13 @@ export class ConnectionManager {
     if (!player) {
       player = new Player(playerId);
       this.players.set(playerId, player);
+    } else {
+      const existingTimer = this.disconnectTimers.get(playerId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        this.disconnectTimers.delete(playerId);
+        console.log(`[ConnectionManager] Player ${playerId} reconnected - cleared disconnect timer`);
+      }
     }
 
     player.setWebSocket(ws);
@@ -36,8 +46,8 @@ export class ConnectionManager {
       this.handleMessage(player!, data.toString());
     });
 
-    ws.on('close', () => {
-      this.handleDisconnect(player!);
+    ws.on('close', (code, reason) => {
+      this.handleDisconnect(player!, code, reason?.toString());
     });
 
     ws.on('error', (error) => {
@@ -120,21 +130,38 @@ export class ConnectionManager {
 
   private handleReconnectRequest(player: Player, payload: any): void {
     const { roomId, lastKnownTick } = payload;
-    this.handler?.onReconnect(player, roomId, lastKnownTick);
+    if (roomId) {
+      player.roomId = roomId;
+    }
+    this.handler?.onReconnect(player, player.roomId || roomId, lastKnownTick);
   }
 
-  private handleDisconnect(player: Player): void {
+  private handleDisconnect(player: Player, code: number, reason?: string): void {
     player.isConnected = false;
-    console.log(`[ConnectionManager] Player disconnected: ${player.id}`);
+    console.log(`[ConnectionManager] Player disconnected: ${player.id} (code=${code})`);
 
     if (player.roomId) {
-      setTimeout(() => {
+      this.handler?.onPlayerDisconnected(player, player.roomId);
+
+      const existingTimer = this.disconnectTimers.get(player.id);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
+      const timer = setTimeout(() => {
         if (!player.isConnected && this.players.has(player.id)) {
-          this.handler?.onPlayerLeave(player, player.roomId!);
+          if (player.roomId) {
+            this.handler?.onPlayerLeave(player, player.roomId);
+          }
           this.players.delete(player.id);
+          this.disconnectTimers.delete(player.id);
           console.log(`[ConnectionManager] Player removed due to timeout: ${player.id}`);
         }
-      }, 30000);
+      }, this.DISCONNECT_TIMEOUT_MS);
+
+      this.disconnectTimers.set(player.id, timer);
+    } else {
+      this.players.delete(player.id);
     }
   }
 

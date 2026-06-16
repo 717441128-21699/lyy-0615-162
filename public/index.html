@@ -415,28 +415,32 @@
 
         function handleReconnectResponse(payload) {
             if (payload.success) {
-                log(`重连成功! 同步类型: ${payload.syncType}, Tick: ${payload.tick}`, 'success');
+                log(`重连成功! 同步类型: ${payload.syncType}, Tick: ${payload.tick}, 位置和分数已恢复`, 'success');
                 lastTick = payload.tick;
+                isConnected = true;
+                setStatus('已连接（重连恢复）');
+
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                document.getElementById('reconnectBtn').disabled = false;
 
                 if (payload.state) {
                     players = {};
                     for (const p of payload.state.players) {
                         players[p.id] = p;
                     }
+                    const self = players[playerId];
+                    if (self) {
+                        log(`恢复角色: ${self.name}, 位置=(${self.position.x.toFixed(1)}, ${self.position.y.toFixed(1)}), 分数=${self.score}`, 'success');
+                    }
                     playerCountEl.textContent = payload.state.players.length;
                     renderPlayers();
                 }
 
-                const joinMsg = {
-                    type: 'player_join',
-                    payload: {
-                        roomId: roomId,
-                        playerName: document.getElementById('playerName').value
-                    }
-                };
-                ws.send(JSON.stringify(joinMsg));
+                log('重连完成，继续游戏。移动和跳跃会正常广播给其他玩家。', 'info');
             } else {
                 log(`重连失败: ${payload.reason}`, 'error');
+                setStatus('重连失败');
             }
         }
 
